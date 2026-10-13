@@ -6,6 +6,36 @@ import exampleRun from './example-run.json'
 
 afterEach(cleanup)
 
+describe('host-only one-Run read', () => {
+  it('loads typed results and the lease journal from three read-only endpoints', async () => {
+    const originalFetch = globalThis.fetch
+    const runId = String(exampleRun.id)
+    const urls: string[] = []
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      urls.push(url)
+      const body = url === '/ui/config' ? { run_id: runId, mode: 'host-read-only' }
+        : url.endsWith('/results') ? { run_id: runId, status: exampleRun.status,
+          artifact_present: true, quarantined: true, reason: 'orphan_unverified',
+          gates: null, review: null, commit: null }
+        : url.includes('/events?') ? [{ seq: 1, attempt: 1, event: 'quarantined',
+          owner: null, terminal_status: 'failed', created_at: '2026-10-13T12:00:00Z' }]
+        : { ...exampleRun, artifact: null }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    try {
+      render(<App />)
+      fireEvent.click(screen.getByRole('button', { name: 'Connect to local UI server' }))
+      await waitFor(() => expect(screen.getByText(runId)).toBeTruthy())
+      fireEvent.click(screen.getByRole('button', { name: 'Read Run' }))
+      await waitFor(() => expect(screen.getByText('Lease journal')).toBeTruthy())
+      expect(screen.getByText(/Quarantined: the worker lease expired/)).toBeTruthy()
+      expect(urls).toEqual(['/ui/config', `/ui/api/v1/runs/${runId}`,
+        `/ui/api/v1/runs/${runId}/results`, `/ui/api/v1/runs/${runId}/events?limit=100`])
+    } finally { globalThis.fetch = originalFetch }
+  })
+})
+
 describe('offline CAF workbench', () => {
   it('does not make network calls while showing the illustrative quarantined Run', () => {
     const originalFetch = globalThis.fetch

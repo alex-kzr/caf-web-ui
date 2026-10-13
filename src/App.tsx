@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { parseRun, validateTask, type CreateTask, type RunStatus } from './contracts'
+import { isRunId, parseRun, validateTask, type CreateTask, type RunEvent, type RunResults, type RunStatus } from './contracts'
 import exampleRun from './example-run.json'
 
 const initial: CreateTask = {
@@ -43,13 +43,18 @@ function Artifact({ artifact }: { artifact: Record<string, unknown> | null }) {
   </>
 }
 
-function RunInspector({ run, label }: { run: RunStatus | null, label: string }) {
+function RunInspector({ run, label, results, events }: {
+  run: RunStatus | null, label: string, results?: RunResults | null, events?: RunEvent[] | null,
+}) {
   if (!run) return <p className="muted">Load the labeled test example or import a sanitized RunStatus JSON file.</p>
+  const artifact = results ? {
+    reason: results.reason, gates: results.gates, review: results.review, commit: results.commit,
+  } : run.artifact
   return <div className="run-inspector">
     <div className="run-top"><span className="eyebrow">{label}</span><span className={`status ${run.status}`}>{run.status}</span></div>
     <h3>Run {run.id}</h3>
     {run.status === 'queued' && <p className="notice">Queued only. No worker execution is implied.</p>}
-    {run.status === 'running' && <p className="notice">Recorded as running at the last update; this offline view is not live.</p>}
+    {run.status === 'running' && <p className="notice">Recorded as running at the last update; this view is not a live stream.</p>}
     <dl className="facts">
       <div><dt>Task</dt><dd>{run.task_id}</dd></div>
       <div><dt>Correlation</dt><dd>{run.correlation_id}</dd></div>
@@ -60,7 +65,13 @@ function RunInspector({ run, label }: { run: RunStatus | null, label: string }) 
       <div><dt>Finished</dt><dd>{run.finished_at ?? 'Not recorded'}</dd></div>
       <div><dt>Updated</dt><dd>{run.updated_at}</dd></div>
     </dl>
-    <Artifact artifact={run.artifact} />
+    <Artifact artifact={artifact} />
+    {events && <section className="journal"><h3>Lease journal</h3>
+      {events.length ? <ol>{events.map(event => <li key={event.seq}>
+        <strong>{event.event}</strong> - attempt {event.attempt}, {event.created_at}
+      </li>)}</ol> : <p className="muted">No claim, completion or quarantine event has been recorded.</p>}
+      <p className="muted">This is a limited lease journal, not a full workflow history or live stream.</p>
+    </section>}
   </div>
 }
 
@@ -72,6 +83,69 @@ export function App() {
   const [run, setRun] = useState<RunStatus | null>(null)
   const [runLabel, setRunLabel] = useState('')
   const [importError, setImportError] = useState('')
+  const [connected, setConnected] = useState(false)
+  const [lookupId, setLookupId] = useState('')
+  const [liveRun, setLiveRun] = useState<RunStatus | null>(null)
+  const [liveResults, setLiveResults] = useState<RunResults | null>(null)
+  const [liveEvents, setLiveEvents] = useState<RunEvent[] | null>(null)
+  const [connectionError, setConnectionError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function connect() {
+    setConnectionError('')
+    try {
+      const response = await fetch('/ui/config')
+      if (!response.ok) throw new Error('Local UI server is unavailable or rejected this request.')
+      const config = await response.json()
+      if (!config || !isRunId(config.run_id) || config.mode !== 'host-read-only') {
+        throw new Error('Invalid local UI scope.')
+      }
+      setLookupId(config.run_id)
+      setConnected(true)
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Connection failed.')
+    }
+  }
+
+  async function loadRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setConnectionError('')
+    setLiveRun(null)
+    setLiveResults(null)
+    setLiveEvents(null)
+    if (!isRunId(lookupId)) { setConnectionError('Enter a valid Run UUID.'); return }
+    setLoading(true)
+    try {
+      const base = `/ui/api/v1/runs/${lookupId}`
+      const responses = await Promise.all([
+        fetch(base, { credentials: 'same-origin' }),
+        fetch(`${base}/results`, { credentials: 'same-origin' }),
+        fetch(`${base}/events?limit=100`, { credentials: 'same-origin' }),
+      ])
+      const failure = responses.find(response => !response.ok)
+      if (failure) {
+        if (failure.status === 401) throw new Error('CAF API rejected the server bearer.')
+        throw new Error(failure.status === 404 ? 'Run not found.' :
+          failure.status === 503 ? 'CAF API is unavailable.' : 'Could not load this Run.')
+      }
+      const [rawRun, rawResults, rawEvents] = await Promise.all(responses.map(response => response.json()))
+      const parsedRun = parseRun(JSON.stringify(rawRun))
+      if (!rawResults || typeof rawResults !== 'object' || rawResults.run_id !== parsedRun.id ||
+          !Array.isArray(rawEvents) || rawEvents.some(event => !event ||
+            !Number.isInteger(event.seq) || !['claimed', 'completed', 'quarantined'].includes(event.event) ||
+            typeof event.created_at !== 'string' || !Number.isInteger(event.attempt))) {
+        throw new Error('Invalid server response.')
+      }
+      if (rawResults.status !== parsedRun.status) throw new Error('Run changed during this read. Try again.')
+      setLiveRun(parsedRun)
+      setLiveResults(rawResults as RunResults)
+      setLiveEvents(rawEvents as RunEvent[])
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Run lookup failed.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   function updateForm(next: CreateTask) {
     setForm(next)
@@ -108,9 +182,9 @@ export function App() {
   return <main>
     <header className="masthead">
       <div><span className="eyebrow">CrewAI Factory / P0</span><h1>Task & run workbench</h1></div>
-      <p>Offline contract preview. No task is submitted, no API is contacted, and no worker or model is started.</p>
+      <p>Prepare a task request, inspect local JSON, or read one existing Run through a local server. This page never starts a worker or model.</p>
     </header>
-    <div className="notice">The current core API can store a queued Run, but an always-on production worker and browser authentication are not available. This page only prepares a request and inspects local JSON.</div>
+    <div className="notice">Task submission and cancellation are disabled here. The optional host server exposes one configured Run for read-only inspection; it does not provide a production worker or a full workflow history.</div>
     <div className="columns">
       <section className="panel" aria-labelledby="task-title">
         <div className="section-head"><span className="eyebrow">01 / Request</span><h2 id="task-title">Prepare a coding task</h2></div>
@@ -139,6 +213,18 @@ export function App() {
         <RunInspector run={run} label={runLabel} />
       </section>
     </div>
-    <footer>CAF P0 preview - No live stream, service control, task list or automatic execution.</footer>
+    <section className="panel connected-panel" aria-labelledby="connected-title">
+      <div className="section-head"><span className="eyebrow">03 / Local server</span><h2 id="connected-title">Read an existing Run</h2></div>
+      <p className="muted">Optional host-only view of one Run configured on the local server. The API bearer remains in that server process; no browser token or worker credential is used. Loopback scope is not user identity authentication. This page cannot submit or cancel Runs.</p>
+      {!connected ? <button type="button" onClick={() => void connect()}>Connect to local UI server</button>
+        : <form onSubmit={event => void loadRun(event)}>
+          <p>Scoped Run: <code>{lookupId}</code></p>
+          <button type="submit" disabled={loading}>{loading ? 'Loading...' : 'Read Run'}</button>
+        </form>}
+      {connectionError && <p className="notice danger" role="alert">{connectionError}</p>}
+      {connected && <p className="muted">Run, results and lease journal are separate reads. A transition between them may require another read.</p>}
+      {liveRun && <RunInspector run={liveRun} label="Read-only server result - not a live stream" results={liveResults} events={liveEvents} />}
+    </section>
+    <footer>CAF P0 preview - No live stream, service control, task list, task submission or automatic execution.</footer>
   </main>
 }

@@ -24,9 +24,31 @@ export type RunStatus = {
   artifact: Record<string, unknown> | null
 }
 
+export type RunEvent = {
+  seq: number
+  attempt: number
+  event: 'claimed' | 'completed' | 'quarantined'
+  owner: string | null
+  terminal_status: string | null
+  created_at: string
+}
+
+export type RunResults = {
+  run_id: string
+  status: RunStatus['status']
+  artifact_present: boolean
+  execution_kind: string | null
+  reason: string | null
+  quarantined: boolean
+  gates: { suite: string; passed: boolean; exit_code: number | null }[] | null
+  review: { approved: boolean; findings: string[] } | null
+  commit: string | null
+}
+
 const slug = /^[a-z0-9][a-z0-9-]{0,62}$/
 const revision = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const isRunId = (value: string): boolean => uuid.test(value)
 const statuses = ['queued', 'running', 'succeeded', 'failed', 'cancelled']
 
 export function validateTask(input: CreateTask): string[] {
