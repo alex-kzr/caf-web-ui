@@ -91,6 +91,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.CAF_UI_PORT ?? '5174')
   const apiPort = Number(process.env.CAF_API_PORT ?? '8123')
   createUiServer({ apiToken: process.env.CAF_API_TOKEN,
-    runId: process.env.CAF_UI_RUN_ID, apiPort, uiPort })
+    runId: process.env.CAF_UI_RUN_ID, apiPort, uiPort: port })
     .listen(port, '127.0.0.1', () => process.stdout.write(`CAF read-only UI on http://127.0.0.1:${port}\n`))
 }

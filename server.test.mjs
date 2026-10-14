@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { spawn } from 'node:child_process'
 import { test } from 'node:test'
 import { createUiServer } from './server.mjs'
 
@@ -80,4 +81,36 @@ test('host-only UI reads only its one scoped Run and strips raw artifact', async
 test('server refuses missing scope and API bearer before listening', () => {
   assert.throws(() => createUiServer({ apiToken: token, runId: '' }))
   assert.throws(() => createUiServer({ apiToken: '', runId }))
+})
+
+test('CLI entrypoint starts the host-only server with an existing bearer', async () => {
+  const probe = http.createServer()
+  const port = await listen(probe)
+  await close(probe)
+  const environment = Object.fromEntries(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP']
+    .filter(key => process.env[key]).map(key => [key, process.env[key]]))
+  const child = spawn(process.execPath, ['server.mjs'], {
+    cwd: import.meta.dirname,
+    env: { ...environment, CAF_API_TOKEN: token, CAF_UI_RUN_ID: runId,
+      CAF_UI_PORT: String(port), CAF_API_PORT: '8123' },
+    stdio: 'ignore',
+  })
+  try {
+    let ready = false
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (child.exitCode !== null) break
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/ui/config`)
+        ready = response.ok
+        if (ready) break
+      } catch { /* startup pending */ }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    assert.equal(ready, true)
+  } finally {
+    if (child.exitCode === null) {
+      child.kill()
+      await new Promise(resolve => child.once('exit', resolve))
+    }
+  }
 })

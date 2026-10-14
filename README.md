@@ -39,3 +39,6 @@ completion and quarantine, not a full workflow history.
 Never embed `CAF_API_TOKEN` in the browser bundle, URL or storage. The
 umbrella [inspection contract](../../docs/architecture/run-inspection-contract.md)
 and [SPEC](../../SPEC.md) govern the current boundary and target P4 scope.
+One isolated same-origin HTTP read of an existing Run passed on 2026-10-14;
+the umbrella [evidence](../../docs/experiments/2026-10-14-p0-live-run-and-crash.md)
+records the scope and remaining browser identity gap.
